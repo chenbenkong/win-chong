@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>伪 Live2D 模型生成器 · 一键版</title>
+<style>
+  :root { --bg:#15171c; --panel:#1e2128; --panel2:#252933; --border:#333846; --text:#e8eaf0; --muted:#9aa1b2; --accent:#5b8cff; --ok:#4ade80; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif; padding:24px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:var(--muted); margin-bottom:20px; }
+  .layout { display:grid; grid-template-columns:minmax(0,1fr) 400px; gap:20px; align-items:start; }
+  @media (max-width:1000px){ .layout{ grid-template-columns:1fr; } }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin-bottom:12px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .stepnum { background:var(--accent); color:#fff; width:22px; height:22px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:12px; flex:none; }
+  .drop { border:2px dashed var(--border); border-radius:10px; padding:28px; text-align:center; color:var(--muted); cursor:pointer; transition:.15s; }
+  .drop:hover,.drop.on { border-color:var(--accent); color:var(--text); }
+  canvas.display, #frames { width:100%; border-radius:8px; display:block;
+    background:repeating-conic-gradient(#2a2d35 0% 25%, #22252c 0% 50%) 0 / 24px 24px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  button { background:var(--panel2); color:var(--text); border:1px solid var(--border); padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-size:15px; padding:10px 22px; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .hint { color:var(--muted); font-size:12px; margin-top:8px; }
+  .tag { font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid var(--border); color:var(--muted); }
+  .tag.ok { color:var(--ok); border-color:var(--ok); }
+  .field { display:flex; align-items:center; gap:10px; margin:8px 0; }
+  .field label { width:110px; color:var(--muted); font-size:13px; flex:none; }
+  .field input[type=range]{ flex:1; accent-color:var(--accent); }
+  .field input[type=text]{ flex:1; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); }
+  .field .val { width:44px; text-align:right; font-size:12px; color:var(--muted); flex:none; }
+  #status { margin-top:8px; font-size:13px; min-height:20px; }
+  #status.ok{ color:var(--ok); } #status.err{ color:#f87171; }
+  .preview-wrap { position:sticky; top:24px; }
+  #preview { width:100%; border-radius:8px; display:block; background:repeating-conic-gradient(#2a2d35 0% 25%, #22252c 0% 50%) 0 / 24px 24px; }
+  .kbd { background:var(--panel2); border:1px solid var(--border); border-radius:4px; padding:1px 6px; font-size:12px; }
+  label.chk { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer; }
+  label.chk input { accent-color:var(--accent); }
+  .thumbs { display:flex; gap:6px; overflow-x:auto; padding:8px 0 2px; }
+  .thumbs img { height:56px; border-radius:6px; border:1px solid var(--border); }
+</style>
+</head>
+<body>
+<h1>伪 Live2D 模型生成器（一键版）</h1>
+<p class="sub">上传 <b>1 张图片</b>（呼吸+轻摆）或 <b>动态 GIF / 多张姿势图</b>（自动轮播多种动作）→ 点一个按钮导出，导入<b>定制版 BongoCat</b>（偏好设置 → 模型管理）即可当桌宠。全程本地处理，图片不上传。</p>
+
+<div class="layout">
+  <div>
+    <div class="card">
+      <h2><span class="stepnum">1</span> 上传素材 <span id="tagFrames" class="tag">0 帧</span></h2>
+      <div id="drop" class="drop">点击选择 或 拖拽图片到这里<br><span style="font-size:12px">支持：单张照片 · 动态 GIF（自动拆帧）· 一次多选几张姿势图</span></div>
+      <input id="file" type="file" accept="image/*" multiple hidden>
+      <div class="thumbs" id="thumbs"></div>
+      <div class="row">
+        <label class="chk"><input id="inCut" type="checkbox" checked> 自动抠图去背景（AI，需联网；GIF 会对每帧生效，帧多时较慢）</label>
+      </div>
+      <div class="row">
+        <label class="chk"><input id="inInvert" type="checkbox"> 抠图结果反了（主体被抠掉时勾选）</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2><span class="stepnum">2</span> 效果微调（可选）</h2>
+      <div class="field"><label>模型名称</label><input id="inName" type="text" value="my-pet"></div>
+      <div class="field"><label>动作停留(秒/帧)</label><input id="inHold" type="range" min="0.1" max="2" step="0.1" value="0.5"><span class="val" id="vHold">0.5</span></div>
+      <div class="field"><label>呼吸幅度</label><input id="inBreath" type="range" min="0" max="2" step="0.1" value="1"><span class="val" id="vBreath">1.0</span></div>
+      <div class="field"><label>鼠标跟随强度</label><input id="inFollow" type="range" min="0" max="2" step="0.1" value="0.6"><span class="val" id="vFollow">0.6</span></div>
+      <p class="hint">单张图 = 呼吸起伏 + 轻微摇摆 + 跟随鼠标；多帧 = 按「动作停留」时长轮播全部动作，同时保留呼吸与鼠标跟随。</p>
+    </div>
+
+    <div class="card">
+      <h2><span class="stepnum">3</span> 一键导出</h2>
+      <div class="row">
+        <button id="btnFolder" class="primary" disabled>⚡ 一键生成模型（导出文件夹）</button>
+        <button id="btnZip" disabled>下载 ZIP 压缩包</button>
+      </div>
+      <p class="hint">「导出文件夹」会弹目录选择窗口，选个位置（如 <span class="kbd">下载</span>）自动创建 <span class="kbd">模型名/</span> 文件夹；ZIP 需先解压成文件夹。然后在定制版 BongoCat 偏好设置 → 模型管理 → 导入该文件夹并启用。</p>
+      <div id="status"></div>
+    </div>
+  </div>
+
+  <div class="preview-wrap">
+    <div class="card">
+      <h2>实时预览 <span class="tag">鼠标移进预览试试</span></h2>
+      <canvas id="preview" width="720" height="720"></canvas>
+      <p class="hint">预览即导入 BongoCat 后的动画效果。</p>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+const $ = id => document.getElementById(id)
+const drop = $('drop'), fileInput = $('file')
+const preview = $('preview'), pctx = preview.getContext('2d')
+
+const state = {
+  frames: [],          // [{canvas, duration}]，duration 秒（GIF 取真实帧延时）
+  W: 0, H: 0,
+  mouse: { x: 0.5, y: 0.5 },
+}
+
+/* ---------- 1. 载入素材 ---------- */
+drop.onclick = () => fileInput.click()
+$('file').onchange = () => fileInput.files.length && loadFiles([...fileInput.files])
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('on') }
+drop.ondragleave = () => drop.classList.remove('on')
+drop.ondrop = e => {
+  e.preventDefault(); drop.classList.remove('on')
+  const files = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/'))
+  if (files.length) loadFiles(files)
+}
+
+async function loadFiles(files) {
+  setStatus('正在读取素材…')
+  const frames = []
+  let name = ''
+  try {
+    const gifs = files.filter(f => f.type === 'image/gif')
+    const rest = files.filter(f => f.type !== 'image/gif')
+
+    for (const f of rest) {
+      const img = await loadImage(f)
+      name ||= f.name.replace(/\.[^.]+$/, '')
+      frames.push({ img, duration: 0 })
+    }
+    for (const f of gifs) {
+      name ||= f.name.replace(/\.[^.]+$/, '')
+      const decoded = await decodeGif(f)
+      if (decoded) frames.push(...decoded)
+      else frames.push({ img: await loadImage(f), duration: 0 })
+    }
+    if (!frames.length) throw new Error('没有可用图片')
+
+    // 统一画布尺寸：取各帧最大宽高，按最长边≤1024 缩放
+    let mw = 0, mh = 0
+    for (const fr of frames) { mw = Math.max(mw, fr.img.width); mh = Math.max(mh, fr.img.height) }
+    const k = Math.min(1, 1024 / Math.max(mw, mh))
+    const W = Math.round(mw * k), H = Math.round(mh * k)
+    const hold = +$('inHold').value
+    const out = []
+    for (const fr of frames) {
+      const c = document.createElement('canvas')
+      c.width = W; c.height = H
+      const ctx = c.getContext('2d')
+      // 居中放置（不同尺寸的姿势图对齐画布中心）
+      const iw = fr.img.width * k, ih = fr.img.height * k
+      ctx.drawImage(fr.img, (W - iw) / 2, (H - ih) / 2, iw, ih)
+      out.push({ canvas: c, duration: fr.duration || hold, gifDelay: fr.duration || 0 })
+    }
+    state.frames = out
+    state.W = W; state.H = H
+    if (!$('inName').value || $('inName').value === 'my-pet') {
+      $('inName').value = (name || 'my-pet').replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40)
+    }
+    renderThumbs()
+    setStatus(`已载入 ${out.length} 帧（${W}×${H}）${out.length > 1 ? `，总时长 ${(out.reduce((a, f) => a + f.duration, 0)).toFixed(1)} 秒` : ''}`, 'ok')
+    refreshButtons()
+  } catch (err) {
+    setStatus(`读取失败：${err}`, 'err')
+  }
+}
+
+const loadImage = file => new Promise((res, rej) => {
+  const url = URL.createObjectURL(file)
+  const img = new Image()
+  img.onload = () => { URL.revokeObjectURL(url); res(img) }
+  img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('图片解析失败')) }
+  img.src = url
+})
+
+// 用 ImageDecoder 拆 GIF 帧（Chrome/Edge 支持）
+async function decodeGif(file) {
+  if (!('ImageDecoder' in window)) return null
+  try {
+    const buf = await file.arrayBuffer()
+    const dec = new ImageDecoder({ data: buf, type: 'image/gif' })
+    await dec.tracks.ready
+    const track = dec.tracks.selectedTrack
+    if (!track || track.frameCount <= 1) return null
+    const count = Math.min(track.frameCount, 60) // 上限 60 帧
+    const frames = []
+    for (let i = 0; i < count; i++) {
+      const { image } = await dec.decode({ frameIndex: i })
+      frames.push({ img: image, duration: image.duration / 1e6 })
+      image.close()
+    }
+    if (track.frameCount > count) setStatus(`GIF 超过 60 帧，只取前 60 帧`)
+    return frames.length ? frames : null
+  } catch { return null }
+}
+
+function renderThumbs() {
+  const box = $('thumbs')
+  box.innerHTML = ''
+  for (const fr of state.frames) {
+    const img = document.createElement('img')
+    img.src = fr.canvas.toDataURL('image/png')
+    box.appendChild(img)
+  }
+  $('tagFrames').textContent = `${state.frames.length} 帧`
+  $('tagFrames').className = 'tag' + (state.frames.length ? ' ok' : '')
+}
+
+function setStatus(msg, cls = '') { const s = $('status'); s.textContent = msg; s.className = cls }
+function refreshButtons() {
+  const ok = state.frames.length > 0
+  $('btnFolder').disabled = !ok || !('showDirectoryPicker' in window)
+  $('btnZip').disabled = !ok
+}
+
+/* ---------- AI 抠图（selfie segmentation，逐帧） ---------- */
+// CDN 源按序尝试：jsdelivr → npmmirror（国内）
+const MP_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1',
+  'https://registry.npmmirror.com/@mediapipe/tasks-vision/1.0.1/files',
+  'https://unpkg.com/@mediapipe/tasks-vision@1.0.1',
+  'https://fastly.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1',
+]
+const MP_MODEL_URLS = [
+  'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
+  'https://cdn.jsdelivr.net/gh/google-ai-edge/mediapipe-samples@main/examples/selfie_segmenter/web/selfie_segmenter.tflite',
+]
+
+async function importVision() {
+  let lastErr
+  for (const base of MP_SOURCES) {
+    try {
+      const vision = await import(/* @vite-ignore */ `${base}/vision_bundle.mjs`)
+      vision.__base = base
+      return vision
+    } catch (err) { lastErr = err }
+  }
+  throw new Error(`所有 CDN 均无法访问（${String(lastErr).slice(0, 50)}…）。可取消勾选「自动抠图」直接导出`)
+}
+
+let segModel = null
+async function getSegmenter(vision) {
+  if (segModel) return segModel
+  const fileset = await vision.FilesetResolver.forVisionTasks(`${vision.__base}/wasm`)
+  const opts = (delegate, modelPath) => ({
+    baseOptions: { modelAssetPath: modelPath, delegate },
+    runningMode: 'IMAGE',
+    outputConfidenceMasks: true,
+    outputCategoryMask: false,
+  })
+  let lastErr
+  for (const modelUrl of MP_MODEL_URLS) {
+    try {
+      try { segModel = await vision.ImageSegmenter.createFromOptions(fileset, opts('GPU', modelUrl)) }
+      catch { segModel = await vision.ImageSegmenter.createFromOptions(fileset, opts('CPU', modelUrl)) }
+      return segModel
+    } catch (err) { lastErr = err }
+  }
+  throw new Error(`分割模型加载失败：${String(lastErr).slice(0, 60)}`)
+}
+
+async function cutoutFrame(canvas, segmenter, invert) {
+  const res = segmenter.detect(canvas)
+  const masks = res.confidenceMasks
+  if (!masks || !masks.length) throw new Error('无分割结果')
+  const conf = masks[masks.length - 1].getAsFloat32Array()
+  for (const m of masks) m.close()
+  const c = document.createElement('canvas')
+  c.width = canvas.width; c.height = canvas.height
+  const ctx = c.getContext('2d')
+  ctx.drawImage(canvas, 0, 0)
+  const im = ctx.getImageData(0, 0, c.width, c.height)
+  const d = im.data
+  for (let p = 0, i = 3; p < conf.length; p++, i += 4) {
+    let person = conf[p]
+    if (invert) person = 1 - person
+    d[i] = Math.round(Math.max(0, Math.min(1, (person - 0.35) / 0.3)) * 255)
+  }
+  ctx.putImageData(im, 0, 0)
+  return c
+}
+
+/* ---------- 模型构建（与定制版 pseudo.json 格式一致） ---------- */
+function settings() {
+  return {
+    name: ($('inName').value.trim() || 'my-pet').replace(/[\\/:*?"<>|\s]+/g, '-'),
+    breath: +$('inBreath').value,
+    follow: +$('inFollow').value,
+  }
+}
+
+function buildConfig() {
+  const W = state.W, H = state.H
+  const s = settings()
+  const f = s.follow
+  const ax = +(W * 0.013 * f).toFixed(2)
+  const ay = +(H * 0.012 * f).toFixed(2)
+  const ar = +(0.06 * f).toFixed(3)
+  const ab = +(H * 0.008 * s.breath).toFixed(2)
+
+  const params = {
+    ParamAngleX: { x: ax },
+    ParamAngleY: { y: ay },
+    ParamAngleZ: { rotation: ar },
+    ParamBreath: { y: ab },
+  }
+
+  const layers = state.frames.map((fr, i) => ({
+    name: `frame_${i}`,
+    file: `layers/frame_${i}.png`,
+    x: W / 2,
+    y: H / 2,
+    zIndex: i,
+    alpha: i === 0 ? 1 : 0,
+    params,
+  }))
+
+  const json = {
+    type: 'pseudo-live2d',
+    version: 1,
+    canvas: { width: W, height: H },
+    layers,
+    physics: { breathing: { amplitude: 1, period: 4 } },
+  }
+
+  // 多帧时生成轮播时间线：每帧停留 duration，切换时快速淡入淡出
+  if (state.frames.length > 1) {
+    const total = state.frames.reduce((a, fr) => a + fr.duration, 0)
+    const tracks = []
+    let t = 0
+    for (const [i, fr] of state.frames.entries()) {
+      const start = t
+      const end = t + fr.duration
+      const eps = Math.min(0.05, fr.duration / 4)
+      const nextStart = end % total
+      const keys = []
+      if (start === 0) keys.push({ t: 0, alpha: 1 })
+      else {
+        keys.push({ t: Math.max(0, start - eps), alpha: 0 })
+        keys.push({ t: start, alpha: 1 })
+      }
+      keys.push({ t: Math.max(start + eps, end - eps), alpha: 1 })
+      keys.push({ t: end, alpha: 0 })
+      void nextStart
+      tracks.push({ name: `frame_${i}`, keys })
+      t = end
+    }
+    json.animation = { duration: total, tracks }
+  }
+
+  return json
+}
+
+async function buildFiles({ doCutout }) {
+  let frames = state.frames
+  if (doCutout) {
+    try {
+      setStatus('AI 抠图中…（每帧约 0.1~0.5 秒）')
+      const vision = await importVision()
+      const segmenter = await getSegmenter(vision)
+      const invert = $('inInvert').checked
+      const cut = []
+      for (const [i, fr] of frames.entries()) {
+        cut.push({ canvas: await cutoutFrame(fr.canvas, segmenter, invert), duration: fr.duration, gifDelay: fr.gifDelay })
+        if (frames.length > 1) setStatus(`AI 抠图中… ${i + 1}/${frames.length}`)
+      }
+      frames = cut
+      setStatus('抠图完成，正在打包…')
+    } catch (err) {
+      // 抠图失败不阻断导出，降级为不抠图
+      setStatus(`抠图失败（${String(err.message || err).slice(0, 60)}），改用原图继续导出…`)
+    }
+  }
+
+  const cfg = buildConfig()
+  const s = settings()
+  const files = [{ path: `${s.name}.pseudo.json`, blob: new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' }) }]
+  for (const [i, fr] of frames.entries()) {
+    files.push({ path: `layers/frame_${i}.png`, blob: await canvasBlob(fr.canvas) })
+  }
+  return files
+}
+const canvasBlob = c => new Promise(r => c.toBlob(r, 'image/png'))
+
+/* ---------- 2. 预览：复刻渲染器逻辑（时间线 + 呼吸 + 鼠标跟随） ---------- */
+preview.addEventListener('pointermove', e => {
+  const r = preview.getBoundingClientRect()
+  state.mouse.x = (e.clientX - r.left) / r.width
+  state.mouse.y = (e.clientY - r.top) / r.height
+})
+
+const anim = { t: 0, last: 0 }
+function sampleAlpha(keys, t, duration) {
+  const sorted = [...keys].sort((a, b) => a.t - b.t)
+  if (sorted.length === 1) return sorted[0].alpha ?? 1
+  let idx = sorted.findIndex(k => k.t > t)
+  let from, to
+  if (idx === -1) { from = sorted[sorted.length - 1]; to = { t: duration, alpha: sorted[0].alpha } }
+  else if (idx === 0) { from = { t: 0, alpha: sorted[sorted.length - 1].alpha }; to = sorted[0] }
+  else { from = sorted[idx - 1]; to = sorted[idx] }
+  const span = to.t - from.t
+  const r = span > 0 ? (t - from.t) / span : 1
+  return (from.alpha ?? 1) + ((to.alpha ?? 1) - (from.alpha ?? 1)) * r
+}
+
+function loop(ts) {
+  const dt = Math.min((ts - anim.last) / 1000, 0.1) || 0
+  anim.last = ts
+
+  pctx.clearRect(0, 0, preview.width, preview.height)
+  if (state.frames.length) {
+    anim.t += dt
+    const cfg = buildConfig()
+    const W = state.W, H = state.H
+    const k = Math.min(preview.width / W, preview.height / H) * 0.92
+    const ox = preview.width / 2, oy = preview.height / 2
+
+    const angleX = 30 - state.mouse.x * 60
+    const angleY = 30 - state.mouse.y * 60
+    const angleZ = (1 - 2 * state.mouse.x) * (1 - 2 * state.mouse.y) * -30
+    const breath = ((Math.sin(anim.t * Math.PI * 2 / cfg.physics.breathing.period) + 1) / 2) * cfg.physics.breathing.amplitude
+
+    const t = cfg.animation ? anim.t % cfg.animation.duration : 0
+
+    for (const [i, fr] of state.frames.entries()) {
+      const layer = cfg.layers[i]
+      const alpha = cfg.animation ? sampleAlpha(cfg.animation.tracks[i].keys, t, cfg.animation.duration) : (i === 0 ? 1 : 0)
+      if (alpha <= 0.01) continue
+      const p = layer.params
+      const bx = ox + angleX * p.ParamAngleX.x * k
+      const by = oy + (angleY * p.ParamAngleY.y + breath * p.ParamBreath.y) * k
+      pctx.save()
+      pctx.globalAlpha = alpha
+      pctx.translate(bx, by)
+      pctx.rotate(angleZ * p.ParamAngleZ.rotation * Math.PI / 180)
+      pctx.drawImage(fr.canvas, -W * k / 2, -H * k / 2, W * k, H * k)
+      pctx.restore()
+    }
+  } else {
+    pctx.fillStyle = '#9aa1b2'
+    pctx.font = '16px system-ui'
+    pctx.textAlign = 'center'
+    pctx.fillText('上传图片 / GIF 后这里播放动画', preview.width / 2, preview.height / 2)
+  }
+  requestAnimationFrame(loop)
+}
+requestAnimationFrame(loop)
+
+/* ---------- 3. 一键导出 ---------- */
+$('btnFolder').onclick = async () => {
+  try {
+    setStatus('处理中…')
+    const files = await buildFiles({ doCutout: $('inCut').checked })
+    setStatus('选择保存位置…')
+    const root = await window.showDirectoryPicker({ mode: 'readwrite' })
+    const s = settings()
+    const dir = await root.getDirectoryHandle(s.name, { create: true })
+    for (const f of files) {
+      const [name, ...dirs] = f.path.split('/').reverse()
+      let d = dir
+      for (const sub of dirs.reverse()) d = await d.getDirectoryHandle(sub, { create: true })
+      const fh = await d.getFileHandle(name, { create: true })
+      const w = await fh.createWritable()
+      await w.write(f.blob); await w.close()
+    }
+    setStatus(`✅ 已导出「${s.name}」（${files.length} 个文件）→ 在定制版 BongoCat 模型管理里导入它`, 'ok')
+  } catch (err) {
+    if (err.name !== 'AbortError') setStatus(`导出失败：${err}`, 'err')
+  }
+}
+$('btnZip').onclick = async () => {
+  try {
+    setStatus('处理中…')
+    const s = settings()
+    const files = await buildFiles({ doCutout: $('inCut').checked })
+    const zip = await makeZip(files.map(f => ({ path: `${s.name}/${f.path}`, blob: f.blob })))
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(zip)
+    a.download = `${s.name}.zip`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+    setStatus('✅ ZIP 已开始下载，解压后把文件夹导入定制版 BongoCat', 'ok')
+  } catch (err) {
+    setStatus(`导出失败：${err}`, 'err')
+  }
+}
+
+/* ---------- 滑杆联动 ---------- */
+for (const [id, vid, fmt] of [['inHold', 'vHold', v => v], ['inBreath', 'vBreath', v => (+v).toFixed(1)], ['inFollow', 'vFollow', v => (+v).toFixed(1)]]) {
+  $(id).oninput = () => {
+    $(vid).textContent = fmt($(id).value)
+    // 停留时长变化时重算非 GIF 帧（GIF 帧保留真实延时）
+    const hold = +$('inHold').value
+    state.frames = state.frames.map(fr => ({
+      canvas: fr.canvas,
+      duration: fr.gifDelay || hold,
+      gifDelay: fr.gifDelay,
+    }))
+  }
+}
+
+/* ---------- 无依赖 ZIP 生成器 ---------- */
+async function makeZip(entries) {
+  const enc = new TextEncoder()
+  const table = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0 } return t })()
+  const crc32 = buf => { let c = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) c = table[(c ^ buf[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0 }
+  const now = new Date()
+  const dosTime = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xFFFF
+  const dosDate = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xFFFF
+  const parts = [], central = []
+  let offset = 0
+  for (const e of entries) {
+    const name = enc.encode(e.path)
+    const data = new Uint8Array(await e.blob.arrayBuffer())
+    const crc = crc32(data)
+    const lh = new DataView(new ArrayBuffer(30))
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true)
+    lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true)
+    lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true)
+    lh.setUint16(26, name.length, true)
+    parts.push(new Uint8Array(lh.buffer), name, data)
+    central.push({ name, crc, size: data.length, offset })
+    offset += 30 + name.length + data.length
+  }
+  const cdStart = offset
+  for (const c of central) {
+    const ch = new DataView(new ArrayBuffer(46))
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true)
+    ch.setUint16(12, dosTime, true); ch.setUint16(14, dosDate, true)
+    ch.setUint32(16, c.crc, true); ch.setUint32(20, c.size, true); ch.setUint32(24, c.size, true)
+    ch.setUint16(28, c.name.length, true); ch.setUint32(42, c.offset, true)
+    parts.push(new Uint8Array(ch.buffer), c.name)
+    offset += 46 + c.name.length
+  }
+  const eocd = new DataView(new ArrayBuffer(22))
+  eocd.setUint32(0, 0x06054b50, true)
+  eocd.setUint16(8, central.length, true); eocd.setUint16(10, central.length, true)
+  eocd.setUint32(12, offset - cdStart, true); eocd.setUint32(16, cdStart, true)
+  parts.push(new Uint8Array(eocd.buffer))
+  return new Blob(parts, { type: 'application/zip' })
+}
+
+refreshButtons()
+</script>
+</body>
+</html>
