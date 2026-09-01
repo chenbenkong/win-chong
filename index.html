@@ -39,6 +39,8 @@
   .kbd { background:var(--panel2); border:1px solid var(--border); border-radius:4px; padding:1px 6px; font-size:12px; }
   label.chk { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer; }
   label.chk input { accent-color:var(--accent); }
+  .seg { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  .seg button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
   .thumbs { display:flex; gap:6px; overflow-x:auto; padding:8px 0 2px; }
   .thumbs img { height:56px; border-radius:6px; border:1px solid var(--border); }
 </style>
@@ -63,12 +65,18 @@
     </div>
 
     <div class="card">
-      <h2><span class="stepnum">2</span> 效果微调（可选）</h2>
+      <h2><span class="stepnum">2</span> 动作风格（可选）</h2>
+      <div class="seg">
+        <button id="styleCalm" class="on">😌 静雅</button>
+        <button id="styleSway">💃 摇摆</button>
+        <button id="styleBounce">🕺 蹦跳</button>
+        <button id="styleCrazy">🤪 疯狂舞动</button>
+      </div>
       <div class="field"><label>模型名称</label><input id="inName" type="text" value="my-pet"></div>
       <div class="field"><label>动作停留(秒/帧)</label><input id="inHold" type="range" min="0.1" max="2" step="0.1" value="0.5"><span class="val" id="vHold">0.5</span></div>
       <div class="field"><label>呼吸幅度</label><input id="inBreath" type="range" min="0" max="2" step="0.1" value="1"><span class="val" id="vBreath">1.0</span></div>
       <div class="field"><label>鼠标跟随强度</label><input id="inFollow" type="range" min="0" max="2" step="0.1" value="0.6"><span class="val" id="vFollow">0.6</span></div>
-      <p class="hint">单张图 = 呼吸起伏 + 轻微摇摆 + 跟随鼠标；多帧 = 按「动作停留」时长轮播全部动作，同时保留呼吸与鼠标跟随。</p>
+      <p class="hint">摇摆/蹦跳/疯狂会把人物切成 20×20 网格做<b>波浪形变</b>：脚部锚定、头肩摆幅最大，像果冻/布料一样舞动；蹦跳和疯狂再叠加弹跳、左右摇摆。多帧素材则所有动作叠加在轮播之上。</p>
     </div>
 
     <div class="card">
@@ -97,9 +105,19 @@ const drop = $('drop'), fileInput = $('file')
 const preview = $('preview'), pctx = preview.getContext('2d')
 
 const state = {
-  frames: [],          // [{canvas, duration}]，duration 秒（GIF 取真实帧延时）
+  frames: [],          // [{canvas, duration, gifDelay}]，duration 秒
   W: 0, H: 0,
   mouse: { x: 0.5, y: 0.5 },
+  style: 'calm',       // calm | sway | bounce | crazy
+}
+
+/* 动作风格切换 */
+for (const [btn, style] of [['styleCalm', 'calm'], ['styleSway', 'sway'], ['styleBounce', 'bounce'], ['styleCrazy', 'crazy']]) {
+  $(btn).onclick = () => {
+    state.style = style
+    for (const b of ['styleCalm', 'styleSway', 'styleBounce', 'styleCrazy']) $(b).classList.remove('on')
+    $(btn).classList.add('on')
+  }
 }
 
 /* ---------- 1. 载入素材 ---------- */
@@ -303,6 +321,11 @@ function buildConfig() {
     ParamBreath: { y: ab },
   }
 
+  // 动作风格：静雅=呼吸+跟随；摇摆/蹦跳/疯狂=波浪网格形变（±弹跳/摇摆叠加）
+  const deformStyles = { sway: 1, bounce: 1.4, crazy: 2.2 }
+  const useDeform = state.style in deformStyles
+  const deformAmp = +(H * 0.02 * deformStyles[state.style] * s.breath).toFixed(2)
+
   const layers = state.frames.map((fr, i) => ({
     name: `frame_${i}`,
     file: `layers/frame_${i}.png`,
@@ -311,6 +334,9 @@ function buildConfig() {
     zIndex: i,
     alpha: i === 0 ? 1 : 0,
     params,
+    deform: useDeform
+      ? { type: 'wave', amplitude: deformAmp, wavelength: +(H * 0.5).toFixed(1), speed: state.style === 'crazy' ? 10 : 6, taper: 1.6, rows: 20, cols: 20 }
+      : undefined,
   }))
 
   const json = {
@@ -321,16 +347,47 @@ function buildConfig() {
     physics: { breathing: { amplitude: 1, period: 4 } },
   }
 
-  // 多帧时生成轮播时间线：每帧停留 duration，切换时快速淡入淡出
-  if (state.frames.length > 1) {
-    const total = state.frames.reduce((a, fr) => a + fr.duration, 0)
+  const totalFrames = state.frames.length
+  const frameTotal = totalFrames > 1 ? state.frames.reduce((a, fr) => a + fr.duration, 0) : 0
+
+  // 弹跳/摇摆：以 2 秒为周期的动作循环（蹦跳=大幅 y 弹跳，疯狂=弹跳+摇摆）
+  if (state.style === 'bounce' || state.style === 'crazy') {
+    const cycle = 2
+    const duration = frameTotal > 0 ? lcm(frameTotal, cycle) : cycle
     const tracks = []
+    const reps = Math.round(duration / cycle)
+    for (let n = 0; n < totalFrames; n++) {
+      const keys = []
+      for (let k = 0; k < reps * 2; k++) {
+        const t = +(k * cycle / 2).toFixed(3)
+        keys.push({ t, y: k % 2 === 0 ? 0 : +(-H * 0.04 * (state.style === 'crazy' ? 1.6 : 1)).toFixed(1) })
+      }
+      keys.push({ t: duration, y: 0 })
+      tracks.push({ name: `frame_${n}`, keys })
+    }
+    if (state.style === 'crazy') {
+      for (let n = 0; n < totalFrames; n++) {
+        // 同一图层只允许一条轨道，把摇摆旋转并进弹跳轨道
+        const track = tracks[n]
+        const rotKeys = []
+        for (let k = 0; k < reps * 4; k++) {
+          rotKeys.push({ t: +(k * duration / (reps * 4)).toFixed(3), rotation: k % 4 === 1 ? 4 : k % 4 === 3 ? -4 : 0 })
+        }
+        rotKeys.push({ t: duration, rotation: 0 })
+        track.keys = mergeTracks(track.keys, rotKeys)
+      }
+    }
+    json.animation = { duration, tracks }
+  }
+
+  // 多帧轮播轨道：与弹跳轨道合并（同一图层合并 alpha + 动作）
+  if (frameTotal > 0) {
+    const eps = Math.min(0.05, state.frames[0].duration / 4)
     let t = 0
+    const loopTracks = []
     for (const [i, fr] of state.frames.entries()) {
       const start = t
       const end = t + fr.duration
-      const eps = Math.min(0.05, fr.duration / 4)
-      const nextStart = end % total
       const keys = []
       if (start === 0) keys.push({ t: 0, alpha: 1 })
       else {
@@ -339,14 +396,38 @@ function buildConfig() {
       }
       keys.push({ t: Math.max(start + eps, end - eps), alpha: 1 })
       keys.push({ t: end, alpha: 0 })
-      void nextStart
-      tracks.push({ name: `frame_${i}`, keys })
+      loopTracks.push({ name: `frame_${i}`, keys })
       t = end
     }
-    json.animation = { duration: total, tracks }
+    if (json.animation) {
+      // 时间轴对齐到公倍数时长，合并每帧的 alpha 与动作
+      const scale = json.animation.duration / frameTotal
+      for (const lt of loopTracks) lt.keys.forEach(k => { k.t = +(k.t * scale).toFixed(3) })
+      for (const [i, lt] of loopTracks.entries()) {
+        const target = json.animation.tracks[i]
+        target.keys = mergeTracks(target.keys, lt.keys)
+      }
+    } else {
+      json.animation = { duration: frameTotal, tracks: loopTracks }
+    }
   }
 
   return json
+}
+
+// 合并同一图层的两组关键帧：按时间归并，属性互补
+function mergeTracks(a, b) {
+  const map = new Map()
+  for (const k of [...a, ...b]) {
+    const key = k.t.toFixed(3)
+    map.set(key, { ...map.get(key), ...k, t: k.t })
+  }
+  return [...map.values()].sort((x, y) => x.t - y.t)
+}
+
+function lcm(a, b) {
+  const gcd = (x, y) => y === 0 ? x : gcd(y, x % y)
+  return a / gcd(a, b) * b
 }
 
 async function buildFiles({ doCutout }) {
@@ -388,17 +469,35 @@ preview.addEventListener('pointermove', e => {
 })
 
 const anim = { t: 0, last: 0 }
-function sampleAlpha(keys, t, duration) {
+
+// 通用关键帧采样（属性名可指定，缺省回退 def）
+function sampleKeys(keys, t, duration, prop, def) {
   const sorted = [...keys].sort((a, b) => a.t - b.t)
-  if (sorted.length === 1) return sorted[0].alpha ?? 1
+  if (sorted.length === 1) return sorted[0][prop] ?? def
   let idx = sorted.findIndex(k => k.t > t)
   let from, to
-  if (idx === -1) { from = sorted[sorted.length - 1]; to = { t: duration, alpha: sorted[0].alpha } }
-  else if (idx === 0) { from = { t: 0, alpha: sorted[sorted.length - 1].alpha }; to = sorted[0] }
+  if (idx === -1) { from = sorted[sorted.length - 1]; to = { t: duration, [prop]: sorted[0][prop] } }
+  else if (idx === 0) { from = { t: 0, [prop]: sorted[sorted.length - 1][prop] }; to = sorted[0] }
   else { from = sorted[idx - 1]; to = sorted[idx] }
   const span = to.t - from.t
   const r = span > 0 ? (t - from.t) / span : 1
-  return (from.alpha ?? 1) + ((to.alpha ?? 1) - (from.alpha ?? 1)) * r
+  return (from[prop] ?? def) + ((to[prop] ?? def) - (from[prop] ?? def)) * r
+}
+
+// 波浪形变预览：横条切片，每条按同一公式水平位移（与渲染器顶点公式一致）
+function drawWarped(ctx, img, W, H, k, deform, time) {
+  const strips = 40
+  const amplitude = deform.amplitude
+  const wavelength = deform.wavelength
+  const speed = deform.speed
+  const taper = deform.taper
+  for (let i = 0; i < strips; i++) {
+    const sy = i / strips
+    const sh = H / strips
+    const decay = (1 - sy) ** taper
+    const offset = amplitude * Math.sin((sy * H * Math.PI * 2) / wavelength + time * speed) * decay
+    ctx.drawImage(img, 0, sy * H, W, sh + 1, (-W / 2 + offset) * k, (sy - 0.5) * H * k, W * k, (sh + 1) * k)
+  }
 }
 
 function loop(ts) {
@@ -422,16 +521,22 @@ function loop(ts) {
 
     for (const [i, fr] of state.frames.entries()) {
       const layer = cfg.layers[i]
-      const alpha = cfg.animation ? sampleAlpha(cfg.animation.tracks[i].keys, t, cfg.animation.duration) : (i === 0 ? 1 : 0)
+      const alpha = cfg.animation ? sampleKeys(cfg.animation.tracks[i].keys, t, cfg.animation.duration, 'alpha', 1) : (i === 0 ? 1 : 0)
       if (alpha <= 0.01) continue
       const p = layer.params
+      const trackY = cfg.animation ? sampleKeys(cfg.animation.tracks[i].keys, t, cfg.animation.duration, 'y', 0) : 0
+      const trackR = cfg.animation ? sampleKeys(cfg.animation.tracks[i].keys, t, cfg.animation.duration, 'rotation', 0) : 0
       const bx = ox + angleX * p.ParamAngleX.x * k
-      const by = oy + (angleY * p.ParamAngleY.y + breath * p.ParamBreath.y) * k
+      const by = oy + (angleY * p.ParamAngleY.y + breath * p.ParamBreath.y + trackY) * k
       pctx.save()
       pctx.globalAlpha = alpha
       pctx.translate(bx, by)
-      pctx.rotate(angleZ * p.ParamAngleZ.rotation * Math.PI / 180)
-      pctx.drawImage(fr.canvas, -W * k / 2, -H * k / 2, W * k, H * k)
+      pctx.rotate((angleZ * p.ParamAngleZ.rotation + trackR) * Math.PI / 180)
+      if (layer.deform) {
+        drawWarped(pctx, fr.canvas, W, H, k, layer.deform, anim.t)
+      } else {
+        pctx.drawImage(fr.canvas, -W * k / 2, -H * k / 2, W * k, H * k)
+      }
       pctx.restore()
     }
   } else {
