@@ -57,7 +57,8 @@
       <input id="file" type="file" accept="image/*,video/mp4,video/webm,video/quicktime" multiple hidden>
       <div class="thumbs" id="thumbs"></div>
       <div class="seg" style="margin-top:10px">
-        <button id="cutSmart" class="on">✨ 智能抠图（推荐）</button>
+        <button id="cutSmart" class="on">✨ 智能抠图（rembg 推荐）</button>
+        <button id="cutRembg">🧠 rembg 引擎（U²-Net）</button>
         <button id="cutAI">🧑 仅 AI 人物分割</button>
         <button id="cutColor">🎨 边缘取色去底</button>
         <button id="cutOff">✂️ 不抠图</button>
@@ -66,7 +67,7 @@
       <div class="row">
         <label class="chk"><input id="inInvert" type="checkbox"> AI 结果反了（主体被抠掉时勾选）</label>
       </div>
-      <p class="hint">智能模式：先试 AI 人物分割，失败自动改用「边缘取色去底」（采样图片四边背景色 + 泛洪填充，全自动无需点色）。抠图对 GIF/视频的每一帧生效。</p>
+      <p class="hint">智能模式默认用 <b>rembg 同款 U²-Net 引擎</b>（首次自动下载 4.6MB 模型并缓存，之后秒抠），失败退回 AI 人物分割，再退回边缘取色。抠图对 GIF/视频的每一帧生效。</p>
       <div id="statusCut"></div>
     </div>
 
@@ -127,10 +128,10 @@ for (const [btn, style] of [['styleCalm', 'calm'], ['styleSway', 'sway'], ['styl
     $(btn).classList.add('on')
   }
 }
-for (const [btn, mode] of [['cutSmart', 'smart'], ['cutAI', 'ai'], ['cutColor', 'color'], ['cutOff', 'off']]) {
+for (const [btn, mode] of [['cutSmart', 'smart'], ['cutRembg', 'rembg'], ['cutAI', 'ai'], ['cutColor', 'color'], ['cutOff', 'off']]) {
   $(btn).onclick = () => {
     state.cutMode = mode
-    for (const b of ['cutSmart', 'cutAI', 'cutColor', 'cutOff']) $(b).classList.remove('on')
+    for (const b of ['cutSmart', 'cutRembg', 'cutAI', 'cutColor', 'cutOff']) $(b).classList.remove('on')
     $(btn).classList.add('on')
   }
 }
@@ -407,14 +408,131 @@ function autoColorKeyFrame(canvas, tol) {
   return canvas
 }
 
+/* ---------- rembg 引擎（U²-Net + onnxruntime-web，全本地推理） ---------- */
+// 模型托管在本仓库（raw/jsdelivr 均带 CORS 头），用 Cache API 永久缓存
+const U2NET_MODEL_URLS = [
+  'https://raw.githubusercontent.com/chenbenkong/win-chong/main/u2netp.onnx',
+  'https://cdn.jsdelivr.net/gh/chenbenkong/win-chong@main/u2netp.onnx',
+  'https://gh-proxy.com/https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
+]
+const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist'
+const U2NET_INPUT = 320
+const U2NET_CACHE = 'u2netp-model-v1'
+
+let ortModule = null
+let u2netSession = null
+
+async function loadOrt() {
+  if (ortModule) return ortModule
+  const ort = await import(`${ORT_BASE}/ort.min.mjs`)
+  ort.env.wasm.wasmPaths = `${ORT_BASE}/`
+  ort.env.wasm.numThreads = 1
+  ortModule = ort
+  return ort
+}
+
+async function fetchU2netModel() {
+  // Cache API 永久缓存（https 环境可用）
+  try {
+    const cache = await caches.open(U2NET_CACHE)
+    const hit = await cache.match('model')
+    if (hit) return hit
+  } catch { /* file:// 下无 Cache API，直接网络拉取 */ }
+
+  let lastErr
+  for (const url of U2NET_MODEL_URLS) {
+    try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const buffered = await response.arrayBuffer()
+      if (buffered.byteLength < 1000000) throw new Error('模型文件不完整')
+      try {
+        const cache = await caches.open(U2NET_CACHE)
+        await cache.put('model', new Response(buffered))
+      } catch { /* 无法缓存就用本次内存 */ }
+      return new Response(buffered)
+    } catch (err) { lastErr = err }
+  }
+  throw new Error(`模型下载失败：${String(lastErr).slice(0, 60)}`)
+}
+
+async function getU2netSession() {
+  if (u2netSession) return u2netSession
+  const ort = await loadOrt()
+  const response = await fetchU2netModel()
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  u2netSession = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] })
+  return u2netSession
+}
+
+// 返回带透明背景的新画布（rembg 同款预处理/后处理）
+async function u2netCutoutFrame(canvas) {
+  const session = await getU2netSession()
+  const ort = await loadOrt()
+
+  const resized = document.createElement('canvas')
+  resized.width = U2NET_INPUT; resized.height = U2NET_INPUT
+  resized.getContext('2d').drawImage(canvas, 0, 0, U2NET_INPUT, U2NET_INPUT)
+
+  const { data: px } = resized.getContext('2d').getImageData(0, 0, U2NET_INPUT, U2NET_INPUT)
+  const mean = [0.485, 0.456, 0.406]
+  const std = [0.229, 0.224, 0.225]
+  const tensorData = new Float32Array(3 * U2NET_INPUT * U2NET_INPUT)
+
+  for (let p = 0; p < U2NET_INPUT * U2NET_INPUT; p++) {
+    for (let c = 0; c < 3; c++) {
+      tensorData[c * U2NET_INPUT * U2NET_INPUT + p] = (px[p * 4 + c] / 255 - mean[c]) / std[c]
+    }
+  }
+
+  const inputName = session.inputNames[0]
+  const results = await session.run({ [inputName]: new ort.Tensor('float32', tensorData, [1, 3, U2NET_INPUT, U2NET_INPUT]) })
+  const mask = results[session.outputNames[0]].data
+
+  let min = Infinity, max = -Infinity
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] < min) min = mask[i]
+    if (mask[i] > max) max = mask[i]
+  }
+  const range = max - min || 1
+  const side = Math.sqrt(mask.length)
+
+  const maskCanvas = document.createElement('canvas')
+  maskCanvas.width = canvas.width; maskCanvas.height = canvas.height
+  const mctx = maskCanvas.getContext('2d')
+  const maskImage = mctx.createImageData(canvas.width, canvas.height)
+
+  for (let y = 0; y < canvas.height; y++) {
+    const sy = Math.min(U2NET_INPUT - 1, Math.max(0, Math.round(y / canvas.height * U2NET_INPUT)))
+    for (let x = 0; x < canvas.width; x++) {
+      const sx = Math.min(U2NET_INPUT - 1, Math.max(0, Math.round(x / canvas.width * U2NET_INPUT)))
+      const i = (y * canvas.width + x) * 4
+      maskImage.data[i] = 255
+      maskImage.data[i + 1] = 255
+      maskImage.data[i + 2] = 255
+      maskImage.data[i + 3] = Math.round((mask[sy * side + sx] - min) / range * 255)
+    }
+  }
+
+  mctx.putImageData(maskImage, 0, 0)
+
+  const result = document.createElement('canvas')
+  result.width = canvas.width; result.height = canvas.height
+  const rctx = result.getContext('2d')
+  rctx.drawImage(canvas, 0, 0)
+  rctx.globalCompositeOperation = 'destination-in'
+  rctx.drawImage(maskCanvas, 0, 0)
+
+  return result
+}
+
 async function buildCutFrames(frames, onProgress) {
   const mode = state.cutMode
   if (mode === 'off') return frames
 
-  if (mode === 'color') {
+  const edgeColorAll = () => {
     const tol = +$('inTol').value
-    return frames.map((fr, i) => {
-      onProgress?.(i)
+    return frames.map(fr => {
       const c = document.createElement('canvas')
       c.width = fr.canvas.width; c.height = fr.canvas.height
       c.getContext('2d').drawImage(fr.canvas, 0, 0)
@@ -422,8 +540,19 @@ async function buildCutFrames(frames, onProgress) {
     })
   }
 
-  // smart / ai：AI 人物分割；smart 失败时自动退回边缘取色
-  try {
+  const u2netAll = async () => {
+    setCutStatus('加载 rembg 引擎（首次下载 4.6MB 模型）…')
+    const session = await getU2netSession()
+    void session
+    const out = []
+    for (const [i, fr] of frames.entries()) {
+      onProgress?.(i)
+      out.push({ canvas: await u2netCutoutFrame(fr.canvas), duration: fr.duration, gifDelay: fr.gifDelay })
+    }
+    return out
+  }
+
+  const selfieAll = async () => {
     const vision = await importVision()
     const segmenter = await getSegmenter(vision)
     const invert = $('inInvert').checked
@@ -433,17 +562,30 @@ async function buildCutFrames(frames, onProgress) {
       out.push({ canvas: await aiCutoutFrame(fr.canvas, segmenter, invert), duration: fr.duration, gifDelay: fr.gifDelay })
     }
     return out
-  } catch (err) {
-    if (mode === 'ai') throw err
-    setCutStatus(`AI 不可用（${String(err.message || err).slice(0, 40)}），自动改用边缘取色去底`)
-    const tol = +$('inTol').value
-    return frames.map(fr => {
-      const c = document.createElement('canvas')
-      c.width = fr.canvas.width; c.height = fr.canvas.height
-      c.getContext('2d').drawImage(fr.canvas, 0, 0)
-      return { canvas: autoColorKeyFrame(c, tol), duration: fr.duration, gifDelay: fr.gifDelay }
-    })
   }
+
+  if (mode === 'color') return edgeColorAll()
+
+  if (mode === 'rembg') return u2netAll()
+
+  if (mode === 'ai') return selfieAll()
+
+  // smart：rembg → selfie → 边缘取色，逐级降级
+  try {
+    return await u2netAll()
+  } catch (err) {
+    setCutStatus(`rembg 不可用（${String(err.message || err).slice(0, 40)}），尝试 AI 人物分割…`)
+  }
+
+  try {
+    const result = await selfieAll()
+    setCutStatus('已用 AI 人物分割完成抠图')
+    return result
+  } catch (err) {
+    setCutStatus(`AI 分割不可用（${String(err.message || err).slice(0, 40)}），改用边缘取色去底`)
+  }
+
+  return edgeColorAll()
 }
 
 /* ---------- 3. 骨骼拆件（姿态检测 + 前臂部件） ---------- */
