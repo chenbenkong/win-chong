@@ -84,6 +84,13 @@
       <div class="field"><label>动作停留(秒/帧)</label><input id="inHold" type="range" min="0.1" max="2" step="0.1" value="0.5"><span class="val" id="vHold">0.5</span></div>
       <div class="field"><label>呼吸幅度</label><input id="inBreath" type="range" min="0" max="2" step="0.1" value="1"><span class="val" id="vBreath">1.0</span></div>
       <div class="field"><label>鼠标跟随强度</label><input id="inFollow" type="range" min="0" max="2" step="0.1" value="0.6"><span class="val" id="vFollow">0.6</span></div>
+      <label class="chk"><input id="inInteract" type="checkbox" checked> 互动回应（单击摸头 + 爱心 + 台词气泡；双击跳舞；敲键盘跳跃）</label>
+      <div class="field" style="align-items:flex-start"><label style="padding-top:6px">互动台词</label><textarea id="inPhrases" style="flex:1;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font:13px/1.5 inherit;min-height:64px">戳我干嘛～
+嘿嘿，好痒
+再戳就生气了！
+陪陪我嘛～
+喵？
+摸摸头</textarea></div>
       <p class="hint">招手模式用 AI 姿态检测定位<b>肘/腕关节</b>，把两条前臂拆成独立部件绕肘部摆动（需照片中手臂可见，检测不到自动退回摇摆）。摇摆/蹦跳/疯狂为网格形变舞动；多帧素材所有动作叠加轮播。</p>
     </div>
 
@@ -712,6 +719,13 @@ function settings() {
   }
 }
 
+
+  const interactCfg = () => {
+    if (!$('inInteract').checked) return undefined
+    const phrases = $('inPhrases').value.split('\n').map(t => t.trim()).filter(Boolean)
+    return { bubble: true, squish: true, hearts: true, phrases }
+  }
+
 function buildConfig(skeletal) {
   const W = state.W, H = state.H
   const s = settings()
@@ -765,6 +779,7 @@ function buildConfig(skeletal) {
       canvas: { width: W, height: H },
       layers,
       animation: { duration: CYCLE, tracks },
+      interact: interactCfg(),
       physics: { breathing: { amplitude: 1, period: 4 } },
     }
   }
@@ -791,6 +806,7 @@ function buildConfig(skeletal) {
     version: 1,
     canvas: { width: W, height: H },
     layers,
+    interact: interactCfg(),
     physics: { breathing: { amplitude: 1, period: 4 } },
   }
 
