@@ -447,10 +447,11 @@ requestAnimationFrame(loop)
 /* ---------- 3. 一键导出 ---------- */
 $('btnFolder').onclick = async () => {
   try {
-    setStatus('处理中…')
-    const files = await buildFiles({ doCutout: $('inCut').checked })
+    // 必须在用户手势有效期内先弹目录选择框，再做耗时的抠图/打包
     setStatus('选择保存位置…')
     const root = await window.showDirectoryPicker({ mode: 'readwrite' })
+    setStatus('处理中…')
+    const files = await buildFiles({ doCutout: $('inCut').checked })
     const s = settings()
     const dir = await root.getDirectoryHandle(s.name, { create: true })
     for (const f of files) {
